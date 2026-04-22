@@ -14,12 +14,16 @@ const BATCH_SIZE = 200; // 200 is safer for URI length limits
 
 // Priority Regions
 const REGIONS = [
-  { name: 'India', lat: [8, 38], lon: [68, 98] }
+  { name: 'India', lat: [8, 38], lon: [68, 98] },
+  { name: 'Europe', lat: [35, 70], lon: [-10, 42] },
+  { name: 'NorthAmerica', lat: [15, 60], lon: [-130, -60] }
 ];
 
 async function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
+
+let processedCount = 0;
 
 async function seedBatch(coords, year) {
   const lats = coords.map(c => c.lat).join(',');
@@ -28,14 +32,12 @@ async function seedBatch(coords, year) {
   const dailyParams = 'temperature_2m_max,temperature_2m_min,precipitation_sum,relative_humidity_2m_mean,relative_humidity_2m_max,relative_humidity_2m_min,wind_speed_10m_max,apparent_temperature_max,uv_index_max';
   const url = `${ARCHIVE_URL}?latitude=${lats}&longitude=${lons}&start_date=${year}-01-01&end_date=${year}-12-31&daily=${dailyParams}&timezone=auto`;
 
-  console.log(`[YEAR ${year}] Fetching batch of ${coords.length}...`);
-
   while (true) {
     try {
       const res = await fetch(url);
       if (res.status === 429) {
-        console.warn('Rate limit hit! Sleeping for 60 seconds...');
-        await sleep(60000);
+        console.warn(`[!] Rate limit hit. Deep-Sleep for 15 minutes to reset the bucket...`);
+        await sleep(900000); // 15 minutes
         continue;
       }
       if (!res.ok) throw new Error(`API: ${res.status}`);
@@ -67,32 +69,38 @@ async function seedBatch(coords, year) {
 
         fs.writeFileSync(file, packDailyYear(packable));
       });
+
+      processedCount += coords.length;
+      console.log(`[✓] Batch complete. Total coordinates in cloud: ${processedCount}. Cooling down for 5 seconds...`);
+      await sleep(5000); // 5s buffer between success
       break; 
     } catch (err) {
       console.error('Batch failed:', err.message);
-      await sleep(5000); 
+      await sleep(10000); 
     }
   }
 }
 
 async function start() {
   const years = [2023, 2024, 2025];
-  const region = REGIONS[0];
   
   if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
 
   for (const year of years) {
-    let batch = [];
-    for (let lat = region.lat[0]; lat <= region.lat[1]; lat += 0.1) {
-      for (let lon = region.lon[0]; lon <= region.lon[1]; lon += 0.1) {
-        batch.push({ lat: parseFloat(lat.toFixed(1)), lon: parseFloat(lon.toFixed(1)) });
-        if (batch.length >= BATCH_SIZE) {
-          await seedBatch(batch, year);
-          batch = [];
+    for (const region of REGIONS) {
+      console.log(`--- Starting Region: ${region.name} for ${year} ---`);
+      let batch = [];
+      for (let lat = region.lat[0]; lat <= region.lat[1]; lat += 0.1) {
+        for (let lon = region.lon[0]; lon <= region.lon[1]; lon += 0.1) {
+          batch.push({ lat: parseFloat(lat.toFixed(1)), lon: parseFloat(lon.toFixed(1)) });
+          if (batch.length >= BATCH_SIZE) {
+            await seedBatch(batch, year);
+            batch = [];
+          }
         }
       }
+      if (batch.length > 0) await seedBatch(batch, year);
     }
-    if (batch.length > 0) await seedBatch(batch, year);
   }
 }
 
